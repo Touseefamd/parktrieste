@@ -2,6 +2,15 @@
 
 Mobile-first parking marketplace for Trieste, Italy. Owners list empty spaces, drivers request them, the operator confirms, and the driver pays the owner directly. ParkTrieste charges a fixed €1 booking fee through a Stripe Payment Link.
 
+## Live deployment
+
+- Site: **https://parktrieste-production.up.railway.app**
+- Source: **https://github.com/Touseefamd/parktrieste**
+- Host: Railway Free (GitHub repo connected, auto-deploy on push to `main`)
+- Database: SQLite on a persistent Railway volume `parktrieste-volume`, mounted at `/app/data`
+- Operator login: `admin@parktrieste.it` (password is in the Railway service variables; change it before real use)
+- WhatsApp number and Stripe Payment Link are placeholders until you add your own values in Railway → service → Variables.
+
 ## Run locally
 
 ```bash
@@ -59,10 +68,10 @@ Seven listings tagged **Example** are inserted on a fresh database. The operator
 
 1. Sign up at https://railway.com with GitHub (no credit card needed on the Free plan).
 2. New Project → Deploy from GitHub repo → choose this repository.
-3. In the service settings, add a **Volume** mounted at `/data`.
+3. In the service settings, add a **Volume** mounted at `/app/data` (command palette → New Service → Volume → choose the service → mount path `/app/data`).
 4. Add these variables in the service's Variables tab:
-   - `DB_PATH=/data/parktrieste.sqlite`
-   - `PORT=3000` (Railway may set this itself — leave its value if present)
+   - `DB_PATH=/app/data/parktrieste.sqlite`
+   - `PORT` — leave Railway's generated value (currently 8080); the app listens on whatever `PORT` says
    - `BASE_URL=https://<your-service>.up.railway.app`
    - `SESSION_SECRET`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`
    - `WHATSAPP_OPERATOR`, `STRIPE_PAYMENT_LINK` (add later)
