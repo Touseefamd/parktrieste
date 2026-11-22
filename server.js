@@ -12,6 +12,7 @@ const {
 const V = require('./lib/views');
 const O = require('./lib/views-owner');
 const SEO = require('./lib/seo');
+const STRIPE = require('./lib/stripe');
 
 init();
 const app = express();
@@ -116,29 +117,69 @@ async function sendOwnerEmail(owner, subject, text) {
 }
 
 // ---------- Stripe webhook (raw body, before json parser) ----------
+function markBookingPayment(ref, obj, status) {
+  const code = ref || (obj && obj.metadata && obj.metadata.booking_code);
+  if (!code) return false;
+  const b = db.prepare('SELECT id FROM bookings WHERE code = ?').get(String(code));
+  if (!b) return false;
+  const paid = status === 'paid' ? 1 : 0;
+  const pi = obj && obj.payment_intent ? String(obj.payment_intent) : null;
+  db.prepare(`INSERT INTO payments(booking_id, fee_paid, stripe_reference, payment_intent_id, status, updated_at)
+              VALUES(?, ?, ?, ?, ?, datetime('now'))
+              ON CONFLICT(booking_id) DO UPDATE SET
+                fee_paid = excluded.fee_paid,
+                stripe_reference = COALESCE(excluded.stripe_reference, payments.stripe_reference),
+                payment_intent_id = COALESCE(excluded.payment_intent_id, payments.payment_intent_id),
+                status = excluded.status,
+                updated_at = datetime('now')`)
+    .run(b.id, paid, pi || 'stripe_webhook', pi, status);
+  return true;
+}
+
 app.post('/webhook/stripe', express.raw({ type: '*/*' }), (req, res) => {
   const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.from('');
-  if (config.stripeWebhookSecret) {
-    const sig = req.headers['stripe-signature'] || '';
-    const parts = Object.fromEntries(sig.split(',').map(p => p.split('=')).filter(p => p.length === 2));
-    const expected = crypto.createHmac('sha256', config.stripeWebhookSecret).update(parts.t + '.' + raw.toString('utf8')).digest('hex');
-    const given = parts.v1 || '';
-    const ok = expected.length === given.length && crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(given));
-    if (!ok) return res.status(400).send('invalid signature');
-  }
+  const sig = String(req.headers['stripe-signature'] || '');
   let event;
-  try { event = JSON.parse(raw.toString('utf8')); } catch { return res.status(400).send('bad json'); }
-  if (event.type === 'checkout.session.completed') {
-    const obj = event.data && event.data.object || {};
-    const ref = obj.client_reference_id || (obj.metadata && obj.metadata.booking_code);
-    if (ref) {
-      const b = db.prepare('SELECT id FROM bookings WHERE code = ?').get(ref);
-      if (b) {
-        db.prepare(`INSERT INTO payments(booking_id, fee_paid, stripe_reference) VALUES(?, 1, ?)
-                    ON CONFLICT(booking_id) DO UPDATE SET fee_paid = 1, stripe_reference = excluded.stripe_reference`)
-          .run(b.id, obj.payment_intent ? String(obj.payment_intent) : 'stripe_webhook');
+
+  if (STRIPE.enabled() && config.stripeWebhookSecret) {
+    try {
+      event = STRIPE.constructEvent(raw, sig);
+    } catch (e) {
+      console.error('Stripe webhook signature failed:', e.message);
+      return res.status(400).send('invalid signature');
+    }
+  } else {
+    // Pilot mode: only a shared secret is available; keep the legacy HMAC check.
+    if (config.stripeWebhookSecret) {
+      const parts = Object.fromEntries(sig.split(',').map(p => p.split('=')).filter(p => p.length === 2));
+      const expected = crypto.createHmac('sha256', config.stripeWebhookSecret).update(parts.t + '.' + raw.toString('utf8')).digest('hex');
+      const given = parts.v1 || '';
+      if (expected.length !== given.length || !crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(given))) {
+        return res.status(400).send('invalid signature');
       }
     }
+    try { event = JSON.parse(raw.toString('utf8')); } catch { return res.status(400).send('bad json'); }
+  }
+
+  // Idempotency: Stripe retries events; never apply the same one twice.
+  try {
+    db.prepare('INSERT OR IGNORE INTO stripe_events(id, type) VALUES(?, ?)').run(String(event.id || ''), String(event.type || ''));
+  } catch { return res.sendStatus(200); }
+
+  const obj = (event.data && event.data.object) || {};
+  if (event.type === 'checkout.session.completed' || event.type === 'checkout.session.async_payment_succeeded') {
+    if (obj.payment_status === 'paid' || event.type === 'checkout.session.async_payment_succeeded') {
+      markBookingPayment(obj.client_reference_id, obj, 'paid');
+    }
+  } else if (event.type === 'checkout.session.async_payment_failed' || event.type === 'checkout.session.expired') {
+    markBookingPayment(obj.client_reference_id, obj, 'unpaid');
+  } else if (event.type === 'charge.refunded') {
+    const pi = obj.payment_intent;
+    const row = pi ? db.prepare('SELECT booking_id FROM payments WHERE payment_intent_id = ?').get(String(pi)) : null;
+    if (row) db.prepare("UPDATE payments SET fee_paid = 0, status = 'refunded', updated_at = datetime('now') WHERE booking_id = ?").run(row.booking_id);
+  } else if (event.type === 'account.updated' && event.account) {
+    db.prepare('UPDATE users SET stripe_payouts_enabled = ? WHERE stripe_account_id = ?')
+      .run(obj.payouts_enabled ? 1 : 0, String(event.account));
   }
   res.sendStatus(200);
 });
@@ -311,11 +352,53 @@ app.get('/booking/:code', (req, res) => {
   const b = db.prepare('SELECT * FROM bookings WHERE code = ?').get(req.params.code);
   if (!b) return err(req, res, 'Prenotazione non trovata / Booking not found', 404);
   const listing = db.prepare('SELECT * FROM listings WHERE id = ?').get(b.listing_id);
-  const paid = !!db.prepare('SELECT fee_paid FROM payments WHERE booking_id = ?').get(b.id)?.fee_paid;
-  render(req, res, V.confirmation({ t: req.t, booking: b, listing, paid }), b.code, 'need', {
+  const owner = db.prepare('SELECT stripe_account_id FROM users WHERE id = ?').get(listing.owner_id);
+  const payment = db.prepare('SELECT fee_paid, status FROM payments WHERE booking_id = ?').get(b.id);
+  render(req, res, V.confirmation({
+    t: req.t,
+    booking: b,
+    listing,
+    paid: !!payment?.fee_paid,
+    canCheckout: STRIPE.enabled() && !!owner?.stripe_account_id && b.status === 'confirmed',
+    payError: req.query.payerror === '1'
+  }), b.code, 'need', {
     noindex: true,
     path: `/booking/${b.code}`
   });
+});
+
+// Driver pays the parking fee through the owner's connected account.
+// ParkTrieste takes a fixed EUR 1 application fee on the payment.
+app.post('/booking/:code/pay', async (req, res) => {
+  const b = db.prepare('SELECT * FROM bookings WHERE code = ?').get(req.params.code);
+  if (!b) return err(req, res, 'Prenotazione non trovata / Booking not found', 404);
+  if (b.status !== 'confirmed') return res.redirect(`/booking/${encodeURIComponent(b.code)}`);
+
+  const listing = db.prepare('SELECT * FROM listings WHERE id = ?').get(b.listing_id);
+  const owner = db.prepare('SELECT * FROM users WHERE id = ?').get(listing.owner_id);
+
+  if (STRIPE.enabled() && owner?.stripe_account_id) {
+    try {
+      const session = await STRIPE.createBookingCheckout({
+        booking: b, listing, owner, baseUrl: SEO.requestBaseUrl(req)
+      });
+      db.prepare(`INSERT INTO payments(booking_id, fee_paid, checkout_session_id, status)
+                  VALUES(?, 0, ?, 'pending')
+                  ON CONFLICT(booking_id) DO UPDATE SET checkout_session_id = excluded.checkout_session_id,
+                    status = 'pending', updated_at = datetime('now')`)
+        .run(b.id, session.id);
+      return res.redirect(session.url);
+    } catch (e) {
+      console.error('Stripe checkout failed:', e.message);
+    }
+  }
+
+  // Pilot fallback: existing Payment Link, or manual marking in /admin.
+  if (config.stripePaymentLink) {
+    const sep = config.stripePaymentLink.includes('?') ? '&' : '?';
+    return res.redirect(`${config.stripePaymentLink}${sep}client_reference_id=${encodeURIComponent(b.code)}`);
+  }
+  return res.redirect(`/booking/${encodeURIComponent(b.code)}?payerror=1`);
 });
 
 app.post('/spaces/:id/report', (req, res) => {
@@ -354,7 +437,43 @@ app.get('/owner', (req, res) => {
     const row = db.prepare("SELECT blocked_dates FROM availability WHERE listing_id = ? LIMIT 1").get(s.id);
     try { blockedMap[s.id] = JSON.parse(row?.blocked_dates || '[]'); } catch { blockedMap[s.id] = []; }
   }
-  render(req, res, O.ownerDashboard({ t: req.t, user: req.user, spaces, requests, earnings, blockedMap }), req.t('dash_title'), 'own');
+  render(req, res, O.ownerDashboard({
+    t: req.t, user: req.user, spaces, requests, earnings, blockedMap,
+    stripeEnabled: STRIPE.enabled(), stripeNotice: req.query.stripe || ''
+  }), req.t('dash_title'), 'own');
+});
+
+// ---------- Stripe Connect: owner onboarding (Express, direct charges) ----------
+app.post('/owner/connect', async (req, res) => {
+  if (!requireUser(req, res, 'owner')) return;
+  if (!req.user.phone_verified) return res.redirect('/owner');
+  if (!STRIPE.enabled()) return res.redirect('/owner?stripe=unavailable');
+
+  try {
+    let accountId = req.user.stripe_account_id;
+    if (!accountId) {
+      const account = await STRIPE.createExpressAccount(req.user);
+      accountId = account.id;
+      db.prepare('UPDATE users SET stripe_account_id = ? WHERE id = ?').run(accountId, req.user.id);
+    }
+    const link = await STRIPE.createOnboardingLink(accountId, SEO.requestBaseUrl(req));
+    return res.redirect(link.url);
+  } catch (e) {
+    console.error('Stripe Connect onboarding failed:', e.message);
+    return res.redirect('/owner?stripe=error');
+  }
+});
+
+app.get('/owner/connect/return', async (req, res) => {
+  if (!requireUser(req, res, 'owner')) return;
+  if (req.user.stripe_account_id) {
+    try {
+      const st = await STRIPE.accountStatus(req.user.stripe_account_id);
+      db.prepare('UPDATE users SET stripe_payouts_enabled = ? WHERE id = ?')
+        .run(st.payoutsEnabled ? 1 : 0, req.user.id);
+    } catch (e) { console.error('Stripe account status failed:', e.message); }
+  }
+  res.redirect('/owner?stripe=returned');
 });
 
 app.post('/owner/register', (req, res) => {

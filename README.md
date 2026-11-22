@@ -1,6 +1,6 @@
 # ParkTrieste
 
-Mobile-first parking marketplace for Trieste, Italy. Owners list empty spaces, drivers request them, the operator confirms, and the driver pays the owner directly. ParkTrieste charges a fixed €1 booking fee through a Stripe Payment Link.
+Mobile-first parking marketplace for Trieste, Italy. Owners list empty spaces, drivers request them, the operator confirms, and the driver pays the owner directly. ParkTrieste charges a fixed €1 booking fee via Stripe Connect (Express accounts, direct charges) with a Payment Link fallback for pilot mode.
 
 ## Live deployment
 
@@ -34,19 +34,25 @@ Node 22.5+ is required for the built-in `node:sqlite` module. No database server
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Login for the operator panel at `/admin`. Change both before going public. | Your choice |
 | `WHATSAPP_OPERATOR` | Your business WhatsApp in E.164 (e.g. `+390401234567`). Receives booking messages and owner-request links. | Your WhatsApp Business number |
 | `GOOGLE_SITE_VERIFICATION` | Optional. The `content` value of Google's HTML verification tag. Adds `<meta name="google-site-verification">` to every page. | Google Search Console → Add property → HTML tag |
-| `STRIPE_PAYMENT_LINK` | The Payment Link for the €1 fee. ParkTrieste appends `?client_reference_id=PT-0000` so the booking code travels with the payment. | Stripe Dashboard → Payment Links → Create link |
-| `STRIPE_SECRET_KEY` | Server-only key. Used only if you add server-side Stripe calls; never put it in front-end code. Leave blank in pilot mode. | Stripe Dashboard → Developers → API keys |
-| `STRIPE_WEBHOOK_SECRET` | Optional. Lets Stripe auto-mark the fee paid via `POST /webhook/stripe`. | Stripe Dashboard → Webhooks → Add endpoint |
+| `STRIPE_SECRET_KEY` | Server-only key. Enables Stripe Connect: owners onboard as Express accounts, drivers pay by card/wallet, ParkTrieste keeps €1 as an application fee. Leave blank in pilot mode. Never expose in front-end code. | Stripe Dashboard → Developers → API keys |
+| `STRIPE_WEBHOOK_SECRET` | Optional. Verifies and auto-marks payments/refunds/account status via `POST /webhook/stripe`. | Stripe Dashboard → Webhooks → Add endpoint |
+| `STRIPE_PAYMENT_LINK` | Pilot fallback for the €1 fee when Connect is off. ParkTrieste appends `?client_reference_id=PT-0000`. | Stripe Dashboard → Payment Links → Create link |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | Optional. Sends owner notification emails. Leave blank to use WhatsApp only. | Your email provider |
 
 ### Stripe setup (important)
 
-1. In Stripe, create a **Payment Link** for a one-time **€1.00** payment.
-2. Paste its URL into `STRIPE_PAYMENT_LINK`.
-3. The app adds `client_reference_id=<booking code>` to the link when the driver clicks "Pay €1". In Stripe you will see the code on the payment.
-4. In pilot mode the operator can mark the fee paid manually in `/admin`. For automatic marking, add a webhook endpoint pointing to `https://YOUR-DOMAIN/webhook/stripe`, subscribe to `checkout.session.completed`, and set `STRIPE_WEBHOOK_SECRET`.
+**Recommended — Stripe Connect (marketplace):**
 
-The driver pays the **owner** directly (cash, bank transfer or Satispay). ParkTrieste never holds the owner's money. Owners handle their own taxes — this is stated in the footer, terms and confirmation flow.
+1. Set `STRIPE_SECRET_KEY` to a Stripe **test** key (`sk_test_...`) inside Railway Variables. The app stays in pilot mode until this is set.
+2. Enable **Connect** in Stripe and use **Express accounts** with **direct charges** (the charge is created on the owner's connected account; ParkTrieste collects a €1 `application_fee_amount`).
+3. Each verified owner taps **"Connect your Stripe account"** on their dashboard (`/owner`), completes Stripe's hosted onboarding, and receives parking payments directly in their own Stripe account.
+4. When a confirmed booking's driver taps **"Pay by card or wallet"**, the app creates a Stripe-hosted Checkout Session on the owner's account with the booking code in metadata. Stripe's hosted page is mobile-first and supports Italian wallets (Satispay, cards).
+5. Add a webhook endpoint `https://YOUR-DOMAIN/webhook/stripe` and set `STRIPE_WEBHOOK_SECRET`. Subscribe to: `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `checkout.session.expired`, `charge.refunded`, `account.updated`. Events are idempotent (deduplicated in the DB).
+6. Refunds (24h cancellation rule) are handled on the owner's connected account; the `charge.refunded` webhook flips the local payment state back.
+
+**Pilot fallback (no keys):** create a **Payment Link** for a one-time **€1.00** payment, set `STRIPE_PAYMENT_LINK`, and the driver is sent there with `?client_reference_id=<booking code>`. The operator can also mark the fee paid manually in `/admin`.
+
+Owners handle their own taxes and collect parking payments directly from Stripe — ParkTrieste only takes its €1 platform fee. This is stated in the footer, terms and confirmation flow. **Before taking real payments**, confirm EU marketplace VAT / deemed-supplier rules with an Italian tax advisor and complete Stripe's live-mode onboarding (identity, bank, etc.).
 
 ## Main routes
 
@@ -56,7 +62,9 @@ The driver pays the **owner** directly (cash, bank transfer or Satispay). ParkTr
 - `/results` — schematic price-pin map + list (intentionally `noindex,follow`)
 - `/space/:id` — details + request form + report button
 - `/booking/:code` — confirmation, WhatsApp message, Step 2 Stripe payment
-- `/owner` — owner login / register / phone verification / dashboard
+- `/booking/:code/pay` — starts Stripe Checkout (Connect) or redirects to the Payment Link fallback
+- `/owner` — owner login / register / phone verification / dashboard (with Stripe Connect onboarding)
+- `/owner/connect`, `/owner/connect/return` — Express account onboarding start / return
 - `/owner/new` — free listing form
 - `/admin` — approve listings, accept view, mark €1 paid, CSV, monthly totals, remove examples
 - `/legal/terms`, `/legal/privacy`, `/legal/cancellation` — legal pages
