@@ -7,10 +7,11 @@ const { db, init, hashPassword, verifyPassword, nextBookingCode, removeExamples 
 const { translator, areas } = require('./lib/i18n');
 const {
   esc, fmtDate, minutes, slotAvailable, hoursBetween, digitsPhone,
-  operatorWaLink, ownerRequestMessage, parsePhotos
+  operatorWaLink, ownerRequestMessage, parsePhotos, safeUrl
 } = require('./lib/helpers');
 const V = require('./lib/views');
 const O = require('./lib/views-owner');
+const SEO = require('./lib/seo');
 
 init();
 const app = express();
@@ -69,16 +70,27 @@ function cleanQuery(q) {
     until: validTime(q.until) ? q.until : '18:00'
   };
 }
-function render(req, res, body, title, section) {
+function render(req, res, body, title, section, seoOpts = {}) {
+  const seo = SEO.meta({
+    lang: req.lang,
+    title: seoOpts.title || `${title || 'ParkTrieste'} · ParkTrieste`,
+    description: seoOpts.description || req.t('brand_tag'),
+    path: seoOpts.path || req.path,
+    image: seoOpts.image || '',
+    type: seoOpts.type || 'website',
+    noindex: seoOpts.noindex !== undefined ? seoOpts.noindex : section === 'own',
+    robots: seoOpts.robots || '',
+    jsonLd: seoOpts.jsonLd || null
+  });
   res.type('html').send(V.layout({
     t: req.t, lang: req.lang, title: title || 'ParkTrieste', body,
     user: req.user, section: section || 'need',
-    nextUrl: req.originalUrl
+    nextUrl: req.originalUrl, seo
   }));
 }
 function err(req, res, message, status = 400) {
   res.status(status);
-  render(req, res, V.errorPage({ t: req.t, message }), 'Errore');
+  render(req, res, V.errorPage({ t: req.t, message }), 'Errore', 'need', { noindex: true });
 }
 function requireUser(req, res, role) {
   if (!req.user) { res.redirect(role === 'admin' ? '/owner' : '/owner'); return false; }
@@ -136,16 +148,82 @@ app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 app.use(express.static('public', { maxAge: '1h' }));
 app.use((req, res, next) => {
   req.cookies = parseCookies(req.headers.cookie);
-  req.lang = req.cookies.pt_lang === 'en' ? 'en' : 'it';
+  const langParam = req.query.lang === 'en' || req.query.lang === 'it' ? req.query.lang : null;
+  req.lang = langParam || (req.cookies.pt_lang === 'en' ? 'en' : 'it');
   req.t = translator(req.lang);
   req.user = userFor(req);
   next();
 });
 
+// ---------- SEO discovery ----------
+app.get('/robots.txt', (req, res) => {
+  res.type('text/plain').send([
+    'User-agent: *',
+    'Allow: /',
+    'Disallow: /set-lang',
+    'Disallow: /owner',
+    'Disallow: /admin',
+    'Disallow: /booking/',
+    'Disallow: /spaces/',
+    'Disallow: /webhook/',
+    'Disallow: /logout',
+    `Sitemap: ${SEO.absolute('/sitemap.xml')}`,
+    ''
+  ].join('\n'));
+});
+
+app.get('/sitemap.xml', (req, res) => {
+  const xmlEsc = s => String(s === undefined || s === null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+  const lastmod = value => {
+    const m = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})/.exec(String(value || ''));
+    return m ? `${m[1]}T${m[2]}:00Z` : '';
+  };
+  const entry = (path, priority, changefreq, modified = '') =>
+    `  <url>\n    <loc>${xmlEsc(SEO.absolute(path))}</loc>${modified ? `\n    <lastmod>${modified}</lastmod>` : ''}\n    <changefreq>${changefreq}</changefreq>\n    <priority>${priority}</priority>\n  </url>`;
+  const urls = [
+    entry('/', '1.0', 'daily'),
+    ...SEO.AREAS.map(a => entry(`/parcheggi/${a.slug}`, '0.8', 'weekly')),
+    entry('/legal/terms', '0.3', 'yearly'),
+    entry('/legal/privacy', '0.3', 'yearly'),
+    entry('/legal/cancellation', '0.3', 'yearly')
+  ];
+  const listings = db.prepare("SELECT id, created_at FROM listings WHERE status = 'approved' AND is_example = 0 ORDER BY id").all();
+  for (const l of listings) urls.push(entry(`/space/${l.id}`, '0.6', 'weekly', lastmod(l.created_at)));
+  res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.join('\n')}\n</urlset>\n`);
+});
+
 // ---------- driver ----------
 app.get('/', (req, res) => {
   const q = cleanQuery(req.query);
-  render(req, res, V.home({ t: req.t, q }), 'ParkTrieste', 'need');
+  const desc = req.lang === 'en'
+    ? 'Find and book parking spaces in Trieste. Search by area, check availability and send a free request to the owner — no account needed.'
+    : 'Trova e prenota parcheggi a Trieste. Cerca per zona, controlla la disponibilità e invia una richiesta gratuita al proprietario, senza account.';
+  render(req, res, V.home({ t: req.t, q }), 'ParkTrieste', 'need', {
+    title: req.lang === 'en' ? 'Parking in Trieste — Book in a minute | ParkTrieste' : 'Parcheggi a Trieste — Prenota in un minuto | ParkTrieste',
+    description: desc,
+    path: '/',
+    jsonLd: SEO.websiteSchema(desc)
+  });
+});
+
+// Crawlable neighbourhood landing pages.
+app.get('/parcheggi/:slug', (req, res) => {
+  const info = SEO.areaBySlug(req.params.slug);
+  if (!info) return err(req, res, '404', 404);
+  const q = cleanQuery(req.query);
+  const listings = db.prepare(listingSelect + " WHERE l.status = 'approved' AND l.area = ? ORDER BY l.id").all(info.area);
+  const text = info[req.lang === 'en' ? 'en' : 'it'];
+  render(req, res, V.areaPage({ t: req.t, lang: req.lang, info, listings, q }), text.title, 'need', {
+    title: `${text.title} | ParkTrieste`,
+    description: text.description,
+    path: `/parcheggi/${info.slug}`,
+    jsonLd: SEO.breadcrumbSchema([
+      { name: 'ParkTrieste', path: '/' },
+      { name: text.title, path: `/parcheggi/${info.slug}` }
+    ])
+  });
 });
 
 app.get('/set-lang', (req, res) => {
@@ -165,7 +243,11 @@ app.get('/results', (req, res) => {
     return slotAvailable(l.id, q.date, q.from, q.until);
   });
   listings.forEach(l => { l.date = q.date; l.from = q.from; l.until = q.until; });
-  render(req, res, V.results({ t: req.t, listings, q }), req.t('results_title'), 'need');
+  // Search results depend on date/time, so keep them out of the index but let crawlers follow the links.
+  render(req, res, V.results({ t: req.t, listings, q }), req.t('results_title'), 'need', {
+    robots: 'noindex,follow',
+    path: '/results'
+  });
 });
 
 app.get('/space/:id', (req, res) => {
@@ -173,7 +255,25 @@ app.get('/space/:id', (req, res) => {
   if (!row || row.status !== 'approved') return err(req, res, 'Annuncio non disponibile / Listing not available', 404);
   const reviews = db.prepare(`SELECT r.* FROM reviews r JOIN bookings b ON b.id = r.booking_id WHERE b.listing_id = ? ORDER BY r.id DESC`).all(row.id);
   const q = cleanQuery(req.query);
-  render(req, res, V.spacePage({ t: req.t, listing: row, q, rating: row.rating || 0, reviews }), row.name, 'need');
+  const photos = parsePhotos(row.photos).map(safeUrl).filter(Boolean);
+  const description = (row.notes || (req.lang === 'en'
+    ? `Parking space in ${row.area}, Trieste, available to book on ParkTrieste.`
+    : `Posto auto prenotabile a ${row.area}, Trieste, su ParkTrieste.`)).slice(0, 300);
+  render(req, res, V.spacePage({ t: req.t, listing: row, q, rating: row.rating || 0, reviews }), row.name, 'need', {
+    noindex: !!row.is_example,
+    title: `${row.name} — ${req.lang === 'en' ? 'Parking in' : 'Parcheggio a'} ${row.area}, Trieste | ParkTrieste`,
+    description,
+    path: `/space/${row.id}`,
+    image: photos[0] || '',
+    jsonLd: [
+      SEO.listingSchema(row, photos[0] || ''),
+      SEO.breadcrumbSchema([
+        { name: 'ParkTrieste', path: '/' },
+        { name: row.area, path: `/parcheggi/${(SEO.AREAS.find(a => a.area === row.area) || {}).slug || 'centro'}` },
+        { name: row.name, path: `/space/${row.id}` }
+      ])
+    ]
+  });
 });
 
 app.post('/spaces/:id/request', (req, res) => {
@@ -210,7 +310,10 @@ app.get('/booking/:code', (req, res) => {
   if (!b) return err(req, res, 'Prenotazione non trovata / Booking not found', 404);
   const listing = db.prepare('SELECT * FROM listings WHERE id = ?').get(b.listing_id);
   const paid = !!db.prepare('SELECT fee_paid FROM payments WHERE booking_id = ?').get(b.id)?.fee_paid;
-  render(req, res, V.confirmation({ t: req.t, booking: b, listing, paid }), b.code, 'need');
+  render(req, res, V.confirmation({ t: req.t, booking: b, listing, paid }), b.code, 'need', {
+    noindex: true,
+    path: `/booking/${b.code}`
+  });
 });
 
 app.post('/spaces/:id/report', (req, res) => {
@@ -223,7 +326,14 @@ app.post('/spaces/:id/report', (req, res) => {
 // ---------- legal ----------
 app.get('/legal/:page', (req, res) => {
   if (!['terms', 'privacy', 'cancellation'].includes(req.params.page)) return err(req, res, 'Not found', 404);
-  render(req, res, V.legal({ t: req.t, page: req.params.page }), req.t(req.params.page === 'terms' ? 'terms' : req.params.page === 'privacy' ? 'privacy' : 'cancellation'));
+  const key = req.params.page;
+  const label = req.t(key === 'terms' ? 'terms' : key === 'privacy' ? 'privacy' : 'cancellation');
+  const bodyText = String(req.t(key + '_body') || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300);
+  render(req, res, V.legal({ t: req.t, page: key }), label, 'need', {
+    title: `${label} | ParkTrieste`,
+    description: bodyText,
+    path: `/legal/${key}`
+  });
 });
 
 // ---------- owner ----------
@@ -404,12 +514,12 @@ app.post('/logout', (req, res) => {
 });
 
 // ---------- error + start ----------
-app.use((req, res) => { res.status(404); render(req, res, V.errorPage({ t: req.t, message: '404' }), '404'); });
+app.use((req, res) => { res.status(404); render(req, res, V.errorPage({ t: req.t, message: '404' }), '404', 'need', { noindex: true }); });
 app.use((e, req, res, next) => {
   console.error(e);
   if (res.headersSent) return next(e);
   res.status(500);
-  render(req, res, V.errorPage({ t: req.t }), 'Errore');
+  render(req, res, V.errorPage({ t: req.t }), 'Errore', 'need', { noindex: true });
 });
 
 app.listen(config.port, '0.0.0.0', () => {

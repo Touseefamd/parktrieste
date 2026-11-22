@@ -33,6 +33,7 @@ Node 22.5+ is required for the built-in `node:sqlite` module. No database server
 | `SESSION_SECRET` | Long random string used to sign sessions. Generate with `openssl rand -hex 32`. Never share it. | Generate locally |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Login for the operator panel at `/admin`. Change both before going public. | Your choice |
 | `WHATSAPP_OPERATOR` | Your business WhatsApp in E.164 (e.g. `+390401234567`). Receives booking messages and owner-request links. | Your WhatsApp Business number |
+| `GOOGLE_SITE_VERIFICATION` | Optional. The `content` value of Google's HTML verification tag. Adds `<meta name="google-site-verification">` to every page. | Google Search Console → Add property → HTML tag |
 | `STRIPE_PAYMENT_LINK` | The Payment Link for the €1 fee. ParkTrieste appends `?client_reference_id=PT-0000` so the booking code travels with the payment. | Stripe Dashboard → Payment Links → Create link |
 | `STRIPE_SECRET_KEY` | Server-only key. Used only if you add server-side Stripe calls; never put it in front-end code. Leave blank in pilot mode. | Stripe Dashboard → Developers → API keys |
 | `STRIPE_WEBHOOK_SECRET` | Optional. Lets Stripe auto-mark the fee paid via `POST /webhook/stripe`. | Stripe Dashboard → Webhooks → Add endpoint |
@@ -50,7 +51,9 @@ The driver pays the **owner** directly (cash, bank transfer or Satispay). ParkTr
 ## Main routes
 
 - `/` — driver home + search (area, date, from, until)
-- `/results` — schematic price-pin map + list
+- `/parcheggi/:slug` — crawlable neighbourhood landing pages (`centro`, `stazione`, `cattinara`, `barcola`, `porto-vecchio`, `stadio`)
+- `/robots.txt`, `/sitemap.xml` — SEO discovery files
+- `/results` — schematic price-pin map + list (intentionally `noindex,follow`)
 - `/space/:id` — details + request form + report button
 - `/booking/:code` — confirmation, WhatsApp message, Step 2 Stripe payment
 - `/owner` — owner login / register / phone verification / dashboard
@@ -59,6 +62,19 @@ The driver pays the **owner** directly (cash, bank transfer or Satispay). ParkTr
 - `/legal/terms`, `/legal/privacy`, `/legal/cancellation` — legal pages
 - `/admin/export.csv` — CSV export
 - `/webhook/stripe` — optional Stripe webhook
+
+## Google SEO (free organic traffic)
+
+The app is built to be indexable: every public page has a unique localized `<title>` and meta description, a self-referencing canonical URL, Italian/English (`it`, `en`, `x-default`) hreflang links, Open Graph/Twitter tags and JSON-LD structured data. `/robots.txt` blocks private and action URLs and points to `/sitemap.xml`, which lists the home page, six neighbourhood landing pages, the legal pages and every real (non-example) approved listing.
+
+To get Google to show it:
+
+1. Open [Google Search Console](https://search.google.com/search-console) and add the property using the URL prefix of your live site.
+2. Verify ownership with the **HTML tag** method: copy only the `content="..."` value into the Railway variable `GOOGLE_SITE_VERIFICATION`, redeploy, then click Verify. (Alternatively upload the HTML file to `public/`.)
+3. Submit `https://<your-domain>/sitemap.xml` under **Sitemaps** in Search Console.
+4. Add real listings and internal links from social/business profiles. Indexing and ranking take weeks to months; no one can guarantee a #1 position.
+
+`?lang=en` renders the English version and is the URL used by the `en` hreflang tag; the clean URL is the Italian default (`x-default`).
 
 ## Seed data
 
