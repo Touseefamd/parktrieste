@@ -1,0 +1,19 @@
+{
+  "name": "parktrieste",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ParkTrieste - parking marketplace for Trieste, Italy",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "seed": "node -e \"require('./lib/db').seedDemo()\""
+  },
+  "dependencies": {
+    "express": "^5.3.0",
+    "nodemailer": "^7.0.11"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  }
+}
