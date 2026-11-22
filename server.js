@@ -80,7 +80,8 @@ function render(req, res, body, title, section, seoOpts = {}) {
     type: seoOpts.type || 'website',
     noindex: seoOpts.noindex !== undefined ? seoOpts.noindex : section === 'own',
     robots: seoOpts.robots || '',
-    jsonLd: seoOpts.jsonLd || null
+    jsonLd: seoOpts.jsonLd || null,
+    baseUrl: SEO.requestBaseUrl(req)
   });
   res.type('html').send(V.layout({
     t: req.t, lang: req.lang, title: title || 'ParkTrieste', body,
@@ -167,7 +168,7 @@ app.get('/robots.txt', (req, res) => {
     'Disallow: /spaces/',
     'Disallow: /webhook/',
     'Disallow: /logout',
-    `Sitemap: ${SEO.absolute('/sitemap.xml')}`,
+    `Sitemap: ${SEO.absolute('/sitemap.xml', SEO.requestBaseUrl(req))}`,
     ''
   ].join('\n'));
 });
@@ -180,8 +181,9 @@ app.get('/sitemap.xml', (req, res) => {
     const m = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})/.exec(String(value || ''));
     return m ? `${m[1]}T${m[2]}:00Z` : '';
   };
+  const base = SEO.requestBaseUrl(req);
   const entry = (path, priority, changefreq, modified = '') =>
-    `  <url>\n    <loc>${xmlEsc(SEO.absolute(path))}</loc>${modified ? `\n    <lastmod>${modified}</lastmod>` : ''}\n    <changefreq>${changefreq}</changefreq>\n    <priority>${priority}</priority>\n  </url>`;
+    `  <url>\n    <loc>${xmlEsc(SEO.absolute(path, base))}</loc>${modified ? `\n    <lastmod>${modified}</lastmod>` : ''}\n    <changefreq>${changefreq}</changefreq>\n    <priority>${priority}</priority>\n  </url>`;
   const urls = [
     entry('/', '1.0', 'daily'),
     ...SEO.AREAS.map(a => entry(`/parcheggi/${a.slug}`, '0.8', 'weekly')),
@@ -204,7 +206,7 @@ app.get('/', (req, res) => {
     title: req.lang === 'en' ? 'Parking in Trieste — Book in a minute | ParkTrieste' : 'Parcheggi a Trieste — Prenota in un minuto | ParkTrieste',
     description: desc,
     path: '/',
-    jsonLd: SEO.websiteSchema(desc)
+    jsonLd: SEO.websiteSchema(desc, SEO.requestBaseUrl(req))
   });
 });
 
@@ -222,7 +224,7 @@ app.get('/parcheggi/:slug', (req, res) => {
     jsonLd: SEO.breadcrumbSchema([
       { name: 'ParkTrieste', path: '/' },
       { name: text.title, path: `/parcheggi/${info.slug}` }
-    ])
+    ], SEO.requestBaseUrl(req))
   });
 });
 
@@ -266,12 +268,12 @@ app.get('/space/:id', (req, res) => {
     path: `/space/${row.id}`,
     image: photos[0] || '',
     jsonLd: [
-      SEO.listingSchema(row, photos[0] || ''),
+      SEO.listingSchema(row, photos[0] || '', SEO.requestBaseUrl(req)),
       SEO.breadcrumbSchema([
         { name: 'ParkTrieste', path: '/' },
         { name: row.area, path: `/parcheggi/${(SEO.AREAS.find(a => a.area === row.area) || {}).slug || 'centro'}` },
         { name: row.name, path: `/space/${row.id}` }
-      ])
+      ], SEO.requestBaseUrl(req))
     ]
   });
 });
