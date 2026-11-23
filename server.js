@@ -241,13 +241,20 @@ app.get('/sitemap.xml', (req, res) => {
 app.get('/', (req, res) => {
   const q = cleanQuery(req.query);
   const desc = req.lang === 'en'
-    ? 'Find and book parking spaces in Trieste. Search by area, check availability and send a free request to the owner — no account needed.'
-    : 'Trova e prenota parcheggi a Trieste. Cerca per zona, controlla la disponibilità e invia una richiesta gratuita al proprietario, senza account.';
+    ? 'Trieste parking app: find and book parking in Trieste. Search by area, check availability and send a free request to the owner — no account needed.'
+    : 'Parcheggio a Trieste: trova e prenota il tuo posto auto. Cerca per zona, controlla la disponibilità e invia una richiesta gratuita al proprietario, senza account.';
+  const baseUrl = SEO.requestBaseUrl(req);
   render(req, res, V.home({ t: req.t, q }), 'ParkTrieste', 'need', {
     title: req.lang === 'en' ? 'Parking in Trieste — Book in a minute | ParkTrieste' : 'Parcheggi a Trieste — Prenota in un minuto | ParkTrieste',
     description: desc,
     path: '/',
-    jsonLd: SEO.websiteSchema(desc, SEO.requestBaseUrl(req))
+    jsonLd: [
+      SEO.websiteSchema(desc, baseUrl),
+      SEO.faqSchema([
+        { q: req.t('seo_faq_q1'), a: req.t('seo_faq_a1') },
+        { q: req.t('seo_faq_q2'), a: req.t('seo_faq_a2') }
+      ])
+    ]
   });
 });
 

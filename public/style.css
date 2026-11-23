@@ -266,6 +266,14 @@ th { background: var(--surface-2); color: var(--muted); font-size: .74rem; text-
 .cookie-banner p { margin: 0; font-size: .8rem; flex: 1; }
 .cookie-banner .btn { flex-shrink: 0; }
 
+/* SEO copy + FAQ */
+.seo-copy { margin: 1.4rem 0; }
+.seo-copy h2 { font-size: 1.1rem; margin: 0 0 .5rem; }
+.seo-copy p { font-size: .86rem; line-height: 1.6; color: var(--muted); margin: .6rem 0; }
+.seo-copy details { border-bottom: 1px solid var(--line); padding: .5rem 0; }
+.seo-copy summary { cursor: pointer; font-weight: 600; font-size: .9rem; }
+.seo-copy details p { margin: .5rem 0 0; }
+
 @media (min-width: 600px) {
   h1 { font-size: 2.1rem; }
   .header-inner { padding: .5rem 1rem; }
