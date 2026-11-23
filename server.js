@@ -19,6 +19,15 @@ const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', true);
 
+// Basic hardening headers for every response, including static files.
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+  next();
+});
+
 // ---------- helpers ----------
 function parseCookies(header = '') {
   const out = {};
@@ -41,21 +50,41 @@ function setCookie(res, name, value, opts = {}) {
   const list = prev ? (Array.isArray(prev) ? prev : [prev]) : [];
   res.setHeader('Set-Cookie', [...list, s]);
 }
-function clearCookie(res, name) {
+function clearCookie(res, name, secure) {
   const prev = res.getHeader('Set-Cookie');
   const list = prev ? (Array.isArray(prev) ? prev : [prev]) : [];
-  res.setHeader('Set-Cookie', [...list, `${name}=; Path=/; Max-Age=0; SameSite=Lax`]);
+  res.setHeader('Set-Cookie', [...list, `${name}=; Path=/; Max-Age=0; SameSite=Lax${secure ? '; Secure' : ''}`]);
 }
 function userFor(req) {
   const token = req.cookies.pt_session;
   if (!token) return null;
   return db.prepare('SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?').get(token) || null;
 }
-function startSession(res, userId) {
+function startSession(req, res, userId) {
   const token = crypto.randomBytes(32).toString('hex');
   db.prepare('INSERT INTO sessions(token, user_id) VALUES(?, ?)').run(token, userId);
-  setCookie(res, 'pt_session', token, { httpOnly: true, maxAge: 60 * 60 * 24 * 30 });
+  setCookie(res, 'pt_session', token, { httpOnly: true, secure: !!req.secure, maxAge: 60 * 60 * 24 * 30 });
 }
+
+// Stop password guessing on a single account without locking out other users.
+// In-memory only, so attempts clear on restart — enough for a pilot service.
+const loginAttempts = new Map();
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_FAILURES = 8;
+function loginThrottleKey(req, identity) { return `${req.ip || '?'}|${identity}`; }
+function isLoginThrottled(key) {
+  const now = Date.now();
+  const rec = loginAttempts.get(key);
+  if (!rec || now - rec.start > LOGIN_WINDOW_MS) return false;
+  return rec.count >= LOGIN_MAX_FAILURES;
+}
+function noteLoginFailure(key) {
+  const now = Date.now();
+  const rec = loginAttempts.get(key);
+  if (!rec || now - rec.start > LOGIN_WINDOW_MS) loginAttempts.set(key, { start: now, count: 1 });
+  else rec.count += 1;
+}
+function clearLoginFailures(key) { loginAttempts.delete(key); }
 function todayStr() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -500,17 +529,23 @@ app.post('/owner/register', (req, res) => {
   const result = db.prepare(`INSERT INTO users(role, name, phone, email, password_hash, phone_verified, verify_code)
                              VALUES('owner', ?, ?, ?, ?, 0, ?)`)
     .run(name, phone, isEmail ? identity : null, hashPassword(password), code);
-  startSession(res, Number(result.lastInsertRowid));
+  startSession(req, res, Number(result.lastInsertRowid));
   res.redirect('/owner');
 });
 
 app.post('/owner/login', (req, res) => {
   const identity = String(req.body.identity || '').trim().toLowerCase();
+  const throttleKey = loginThrottleKey(req, identity);
+  if (isLoginThrottled(throttleKey)) {
+    return err(req, res, req.t('login_throttled'), 429);
+  }
   const user = db.prepare('SELECT * FROM users WHERE email = ? OR phone = ?').get(identity, identity);
   if (!user || !verifyPassword(req.body.password || '', user.password_hash)) {
+    noteLoginFailure(throttleKey);
     return render(req, res, O.ownerAuth({ t: req.t, lang: req.lang, mode: 'login', values: req.body, error: req.lang === 'it' ? 'Credenziali non valide.' : 'Invalid credentials.' }), req.t('login'), 'own');
   }
-  startSession(res, user.id);
+  clearLoginFailures(throttleKey);
+  startSession(req, res, user.id);
   res.redirect(user.role === 'admin' ? '/admin' : '/owner');
 });
 
@@ -637,7 +672,7 @@ app.get('/admin/export.csv', (req, res) => {
 app.post('/logout', (req, res) => {
   const token = req.cookies.pt_session;
   if (token) db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
-  clearCookie(res, 'pt_session');
+  clearCookie(res, 'pt_session', !!req.secure);
   res.redirect('/');
 });
 
