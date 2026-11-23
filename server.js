@@ -134,15 +134,20 @@ const listingSelect = `
     (SELECT COUNT(*) FROM reviews r2 JOIN bookings rb2 ON rb2.id = r2.booking_id WHERE rb2.listing_id = l.id) AS review_count
   FROM listings l JOIN users u ON u.id = l.owner_id`;
 
-async function sendOwnerEmail(owner, subject, text) {
-  if (!config.smtp.host || !owner || !owner.email) return;
+async function sendEmail(to, subject, text) {
+  if (!config.smtp.host || !to) return;
   try {
     const transport = nodemailer.createTransport({
       host: config.smtp.host, port: config.smtp.port, secure: config.smtp.port === 465,
       auth: config.smtp.user ? { user: config.smtp.user, pass: config.smtp.pass } : undefined
     });
-    await transport.sendMail({ from: config.smtp.from, to: owner.email, subject, text });
+    await transport.sendMail({ from: config.smtp.from, to, subject, text });
   } catch (e) { console.error('Email notification failed:', e.message); }
+}
+
+// Every message submitted on the site is copied to the operator inbox.
+function notifyOperator(subject, text) {
+  return sendEmail(config.notificationEmail, `[ParkTrieste] ${subject}`, text);
 }
 
 // ---------- Stripe webhook (raw body, before json parser) ----------
@@ -381,7 +386,9 @@ app.post('/spaces/:id/request', (req, res) => {
   const wa = operatorWaLink(msg);
   db.prepare('INSERT INTO notifications(owner_id, booking_id, channel, message) VALUES(?, ?, ?, ?)')
     .run(listing.owner_id, bookingId, 'whatsapp', msg + '\n' + wa);
-  sendOwnerEmail(owner, `ParkTrieste ${code} — ${req.t('requests')}`, msg + '\n' + wa);
+  sendEmail(owner && owner.email, `ParkTrieste ${code} — ${req.t('requests')}`, msg + '\n' + wa);
+  notifyOperator(`Nuova richiesta ${code} — ${listing.name}`,
+    `${msg}\nZona / Area: ${listing.area}\nAnnuncio / Listing: ${req.protocol}://${req.get('host')}/space/${listing.id}\n${wa}`);
   res.redirect('/booking/' + encodeURIComponent(code));
 });
 
@@ -442,6 +449,8 @@ app.post('/spaces/:id/report', (req, res) => {
   const reason = String(req.body.reason || '').slice(0, 120);
   const detail = String(req.body.detail || '').slice(0, 1000);
   db.prepare('INSERT INTO reports(listing_id, reason, detail) VALUES(?, ?, ?)').run(req.params.id, reason, detail);
+  notifyOperator(`Segnalazione annuncio #${req.params.id}`,
+    `Motivo / Reason: ${reason || '-'}\nDettagli / Details: ${detail || '-'}\nAnnuncio / Listing: ${req.protocol}://${req.get('host')}/space/${req.params.id}`);
   res.redirect('/space/' + req.params.id + '?reported=1');
 });
 
@@ -531,6 +540,8 @@ app.post('/owner/register', (req, res) => {
                              VALUES('owner', ?, ?, ?, ?, 0, ?)`)
     .run(name, phone, isEmail ? identity : null, hashPassword(password), code);
   startSession(req, res, Number(result.lastInsertRowid));
+  notifyOperator(`Nuovo proprietario registrato — ${name}`,
+    `Nome / Name: ${name}\nTelefono / Phone: ${phone}\nEmail: ${isEmail ? identity : '-'}`);
   res.redirect('/owner');
 });
 
@@ -584,6 +595,8 @@ app.post('/owner/listings', (req, res) => {
   const listingId = Number(result.lastInsertRowid);
   const ins = db.prepare('INSERT INTO availability(listing_id, weekday, "start", "end", blocked_dates) VALUES(?, ?, ?, ?, \'[]\')');
   (days.length ? days : [0,1,2,3,4,5,6]).forEach(wd => ins.run(listingId, wd, b.open_time, b.close_time));
+  notifyOperator(`Nuovo parcheggio da approvare — ${b.name}`,
+    `Proprietario / Owner: ${req.user.name}\nZona / Area: ${b.area}\nIndirizzo / Address: ${String(b.address || '-')}\nPrezzo / Price: €${Number(b.price_hour).toFixed(2)}/ora\nAnnuncio / Listing: ${req.protocol}://${req.get('host')}/admin`);
   render(req, res, `<section class="page-head center"><div class="success-mark">✓</div><h1>${esc(req.t('form_submit'))}</h1><p class="notice">${esc(req.t('form_pending'))}</p><p><a class="btn" href="/owner">${esc(req.t('back'))}</a></p></section>`, req.t('form_submit'), 'own');
 });
 

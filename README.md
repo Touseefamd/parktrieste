@@ -37,7 +37,8 @@ Node 22.5+ is required for the built-in `node:sqlite` module. No database server
 | `STRIPE_SECRET_KEY` | Server-only key. Enables Stripe Connect: owners onboard as Express accounts, drivers pay by card/wallet, ParkTrieste keeps €1 as an application fee. Leave blank in pilot mode. Never expose in front-end code. | Stripe Dashboard → Developers → API keys |
 | `STRIPE_WEBHOOK_SECRET` | Optional. Verifies and auto-marks payments/refunds/account status via `POST /webhook/stripe`. | Stripe Dashboard → Webhooks → Add endpoint |
 | `STRIPE_PAYMENT_LINK` | Pilot fallback for the €1 fee when Connect is off. ParkTrieste appends `?client_reference_id=PT-0000`. | Stripe Dashboard → Payment Links → Create link |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | Optional. Sends owner notification emails. Leave blank to use WhatsApp only. | Your email provider |
+| `NOTIFICATION_EMAIL` | Single operator inbox for every site message (new booking requests, owner registrations, new listings and reports). Defaults to `triesteparking@gmail.com`; shown as a mailto link in the footer. | Your email |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | Needed to actually deliver those emails. Use your provider's SMTP settings and an app password where supported. Leave blank to use WhatsApp/dashboard only. | Your email provider |
 
 ### Stripe setup (important)
 
