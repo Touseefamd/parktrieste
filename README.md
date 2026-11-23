@@ -57,7 +57,7 @@ Owners handle their own taxes and collect parking payments directly from Stripe 
 ## Main routes
 
 - `/` — driver home + search (area, date, from, until)
-- `/parcheggi/:slug` — crawlable neighbourhood landing pages (`centro`, `stazione`, `cattinara`, `barcola`, `porto-vecchio`, `stadio`)
+- `/parcheggi/:slug` — crawlable neighbourhood landing pages (`centro`, `stazione`, `cattinara`, `barcola`, `porto-vecchio`, `stadio`, `silos`)
 - `/robots.txt`, `/sitemap.xml` — SEO discovery files
 - `/results` — schematic price-pin map + list (intentionally `noindex,follow`)
 - `/space/:id` — details + request form + report button
@@ -73,7 +73,7 @@ Owners handle their own taxes and collect parking payments directly from Stripe 
 
 ## Google SEO (free organic traffic)
 
-The app is built to be indexable: every public page has a unique localized `<title>` and meta description, a self-referencing canonical URL, Italian/English (`it`, `en`, `x-default`) hreflang links, Open Graph/Twitter tags and JSON-LD structured data. `/robots.txt` blocks private and action URLs and points to `/sitemap.xml`, which lists the home page, six neighbourhood landing pages, the legal pages and every real (non-example) approved listing.
+The app is built to be indexable: every public page has a unique localized `<title>` and meta description, a keywords meta tag with the full target phrase list, a self-referencing canonical URL, Italian/English (`it`, `en`, `x-default`) hreflang links, Open Graph/Twitter tags and JSON-LD structured data (including FAQ schema on the home page). `/robots.txt` blocks private and action URLs and points to `/sitemap.xml`, which lists the home page, seven neighbourhood landing pages (including Silos), the legal pages and every real (non-example) approved listing.
 
 To get Google to show it:
 
