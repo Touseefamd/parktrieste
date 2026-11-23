@@ -121,3 +121,7 @@ EnvironmentFile=/srv/parktrieste/.env
 Put a reverse proxy (nginx/Caddy) with TLS in front and set `BASE_URL=https://your-domain`.
 
 GitHub Pages / Netlify static hosting will **not** work — this app needs Node for the database, sessions and admin panel.
+
+## Credits
+
+Hero image: [Panorama of Trieste from Monte Grisa in the sunset light](https://commons.wikimedia.org/wiki/File:Trieste,_panorama_della_citt%C3%A0_nella_luce_del_tramonto_(dicembre_2020)_1.jpg) by Giuseppe Basile, via Wikimedia Commons, licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). It is cropped for the banner and credited in the site footer.

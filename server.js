@@ -277,6 +277,7 @@ app.get('/', (req, res) => {
     title: req.lang === 'en' ? 'Parking in Trieste — Book in a minute | ParkTrieste' : 'Parcheggi a Trieste — Prenota in un minuto | ParkTrieste',
     description: desc,
     path: '/',
+    image: '/hero-trieste.jpg',
     jsonLd: [
       SEO.websiteSchema(desc, baseUrl),
       SEO.faqSchema([

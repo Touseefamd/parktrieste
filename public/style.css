@@ -98,7 +98,21 @@ p { margin: .5rem 0; }
 .section-title { margin-top: 1.6rem; }
 
 /* hero + search */
-.hero { padding: 1.2rem .2rem .6rem; }
+.hero {
+  position: relative; overflow: hidden;
+  margin-bottom: .4rem; padding: 1.6rem 1.2rem 1.4rem;
+  border-radius: var(--radius); box-shadow: var(--shadow);
+  color: #fff;
+  background-color: var(--blue-dark);
+  background-image:
+    linear-gradient(90deg, rgba(5,28,52,.88) 0%, rgba(5,28,52,.55) 62%, rgba(5,28,52,.12) 100%),
+    url('/hero-trieste.jpg');
+  background-size: cover;
+  background-position: center 42%;
+}
+.hero .eyebrow { color: var(--yellow); }
+.hero h1 { color: #fff; text-shadow: 0 2px 12px rgba(0,0,0,.55); }
+.hero .lead { color: #eef4fa; text-shadow: 0 1px 8px rgba(0,0,0,.6); }
 .eyebrow { color: var(--blue); font-weight: 700; font-size: .78rem; letter-spacing: .08em; text-transform: uppercase; }
 [data-theme="dark"] .eyebrow { color: var(--yellow); }
 .lead { color: var(--muted); font-size: 1.02rem; }
