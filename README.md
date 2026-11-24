@@ -5,6 +5,7 @@ Mobile-first parking marketplace for Trieste, Italy. Owners list empty spaces, d
 ## Live deployment
 
 - Site: **https://parktrieste-production.up.railway.app**
+- Short link: **https://tinyurl.com/24urq6ty** (free, shareable)
 - Source: **https://github.com/Touseefamd/parktrieste**
 - Host: Railway Free (GitHub repo connected, auto-deploy on push to `main`)
 - Database: SQLite on a persistent Railway volume `parktrieste-volume`, mounted at `/app/data`
@@ -39,6 +40,7 @@ Node 22.5+ is required for the built-in `node:sqlite` module. No database server
 | `STRIPE_PAYMENT_LINK` | Pilot fallback for the €1 fee when Connect is off. ParkTrieste appends `?client_reference_id=PT-0000`. | Stripe Dashboard → Payment Links → Create link |
 | `NOTIFICATION_EMAIL` | Single operator inbox for every site message (new booking requests, owner registrations, new listings and reports). Defaults to `triesteparking@gmail.com`; shown as a mailto link in the footer. | Your email |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | Needed to actually deliver those emails. Use your provider's SMTP settings and an app password where supported. Leave blank to use WhatsApp/dashboard only. | Your email provider |
+| `REPORT_TOKEN` | Optional secret for manually triggering the weekly report with `POST /report/weekly` (header `x-report-token`). The app itself sends the scheduled report every Monday 08:00 UTC, so no external scheduler is needed. Leave blank to disable only the manual route. | Generate with `node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"` |
 
 ### Stripe setup (important)
 
@@ -84,6 +86,14 @@ To get Google to show it:
 4. Add real listings and internal links from social/business profiles. Indexing and ranking take weeks to months; no one can guarantee a #1 position.
 
 `?lang=en` renders the English version and is the URL used by the `en` hreflang tag; the clean URL is the Italian default (`x-default`).
+
+## Traffic and weekly report
+
+The site counts its own page views in SQLite: page path, language, referrer host and day only — never IP addresses or user agents. Bots and private/admin URLs are excluded, and raw history older than 90 days is deleted automatically. The last 7 days are visible under **Traffico (ultimi 7 giorni)** in `/admin`.
+
+The shareable short link is **https://tinyurl.com/24urq6ty**.
+
+The app emails a 7-day digest (views, daily breakdown, top pages, referrers, bookings, listings and owners) to `NOTIFICATION_EMAIL` (default `triesteparking@gmail.com`) every Monday at 08:00 UTC. The schedule runs inside the app, and a saved week key prevents duplicates after restarts. Email delivery only works once the `SMTP_*` variables are set in Railway. You can also trigger it manually with a secret-protected `POST /report/weekly`.
 
 ## Seed data
 

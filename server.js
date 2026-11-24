@@ -13,6 +13,7 @@ const V = require('./lib/views');
 const O = require('./lib/views-owner');
 const SEO = require('./lib/seo');
 const STRIPE = require('./lib/stripe');
+const { trafficStats, reportText } = require('./lib/stats');
 
 init();
 const app = express();
@@ -218,6 +219,28 @@ app.post('/webhook/stripe', express.raw({ type: '*/*' }), (req, res) => {
   res.sendStatus(200);
 });
 
+// Privacy-friendly traffic tracking: page path + referrer host only, never IP.
+const BOT_UA = /bot|crawler|spider|slurp|curl|wget|python|monitor|uptime|headless/i;
+function trackView(req) {
+  if (req.method !== 'GET') return;
+  if (BOT_UA.test(String(req.headers['user-agent'] || ''))) return;
+  const accept = String(req.headers.accept || '');
+  if (accept && !accept.includes('text/html')) return;
+  const p = req.path;
+  if (/^\/(owner|admin|booking|webhook|report|set-lang)(\/|$)/.test(p) ||
+      p === '/robots.txt' || p === '/sitemap.xml') return;
+  let referrer = 'direct';
+  const ref = String(req.headers.referer || '');
+  if (ref) {
+    try { referrer = new URL(ref).hostname.replace(/^www\./, '').toLowerCase().slice(0, 100); }
+    catch { referrer = 'other'; }
+  }
+  try {
+    db.prepare('INSERT INTO page_views(path, referrer, lang) VALUES(?, ?, ?)')
+      .run(p.slice(0, 200), referrer, req.lang || 'it');
+  } catch { /* tracking must never break a page */ }
+}
+
 // ---------- global middleware ----------
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
@@ -228,6 +251,7 @@ app.use((req, res, next) => {
   req.lang = langParam || (req.cookies.pt_lang === 'en' ? 'en' : 'it');
   req.t = translator(req.lang);
   req.user = userFor(req);
+  trackView(req);
   next();
 });
 
@@ -631,6 +655,45 @@ app.post('/owner/listings/:id/block', (req, res) => {
   res.redirect('/owner');
 });
 
+// ---------- weekly digest ----------
+function isoWeekKey(date = new Date()) {
+  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  const day = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - day);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const week = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+  return `${d.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+}
+
+function sendWeeklyReport() {
+  const stats = trafficStats(7);
+  notifyOperator(`Weekly traffic report — ${new Date().toISOString().slice(0, 10)}`, reportText(stats));
+  db.prepare(`INSERT INTO app_meta(key, value) VALUES('last_weekly_report', ?)
+              ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(isoWeekKey());
+  return stats;
+}
+
+// The app schedules its own Monday 08:00 UTC digest. The saved week key stops
+// duplicate emails if the process restarts or is redeployed on a Monday.
+function maybeSendWeeklyReport() {
+  try {
+    const now = new Date();
+    if (now.getUTCDay() !== 1 || now.getUTCHours() < 8) return;
+    const week = isoWeekKey(now);
+    const row = db.prepare("SELECT value FROM app_meta WHERE key = 'last_weekly_report'").get();
+    if (row && row.value === week) return;
+    sendWeeklyReport();
+  } catch (e) { console.error('Weekly report failed:', e.message); }
+}
+
+// Manual trigger (token-protected); also marks this week as sent.
+app.post('/report/weekly', (req, res) => {
+  if (!config.reportToken) return res.sendStatus(404);
+  if (String(req.get('x-report-token') || '') !== config.reportToken) return res.sendStatus(401);
+  const stats = sendWeeklyReport();
+  res.json({ ok: true, views: stats.total, bookings: stats.bookings, emailConfigured: Boolean(config.smtp.host) });
+});
+
 // ---------- admin ----------
 app.get('/admin', (req, res) => {
   if (!requireUser(req, res, 'admin')) return;
@@ -643,7 +706,8 @@ app.get('/admin', (req, res) => {
       COALESCE(SUM(CASE WHEN b.status='confirmed' THEN b.price ELSE 0 END),0) AS owner_payouts
     FROM bookings b LEFT JOIN payments p ON p.booking_id=b.id GROUP BY substr(b.date,1,7) ORDER BY month DESC`).all();
   const exampleCount = db.prepare('SELECT COUNT(*) AS n FROM listings WHERE is_example = 1').get().n;
-  render(req, res, O.adminPanel({ t: req.t, pending, bookings, totals, exampleCount }), req.t('admin_title'), 'own');
+  const traffic = trafficStats(7);
+  render(req, res, O.adminPanel({ t: req.t, pending, bookings, totals, exampleCount, traffic }), req.t('admin_title'), 'own');
 });
 
 app.post('/admin/listings/:id/approve', (req, res) => {
@@ -703,4 +767,6 @@ app.listen(config.port, '0.0.0.0', () => {
   console.log(`ParkTrieste running at ${config.baseUrl} (port ${config.port})`);
   console.log(`Admin: ${config.adminEmail}`);
   console.log(`WhatsApp operator: ${config.whatsappOperator}`);
+  setTimeout(maybeSendWeeklyReport, 10000).unref();
+  setInterval(maybeSendWeeklyReport, 60 * 60 * 1000).unref();
 });
